@@ -22,11 +22,9 @@ from phoenix.server.agents.capabilities import (
     NativeToolRetryCapability,
     PhoenixMCPCapability,
     PhoenixMCPToolset,
-    SkillsCapability,
     UIContextsCapability,
     build_anthropic_prompt_cache_capability,
 )
-from phoenix.server.agents.capabilities.skills import SkillsToolset
 from phoenix.server.agents.capabilities.tools.external import (
     get_external_tool_capability_function,
 )
@@ -39,7 +37,6 @@ from phoenix.server.agents.capabilities.tools.internal.bash import BashCapabilit
 from phoenix.server.agents.capabilities.viewer_access import ViewerAccessCapability
 from phoenix.server.agents.prompts import AgentPrompts
 from phoenix.server.agents.pydantic_ai import OpenInferenceCapabilityWrapper
-from phoenix.server.agents.skills import get_skills
 from phoenix.server.agents.types import AgentDependencies, AgentOutput
 from phoenix.server.agents.web_access import (
     build_web_fetch_capability,
@@ -53,16 +50,6 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
     from phoenix.server.bearer_auth import PhoenixUser
-
-
-def build_skills_capability(*, prompts: AgentPrompts) -> SkillsCapability[AgentDependencies]:
-    return SkillsCapability(
-        toolset=SkillsToolset[AgentDependencies](
-            skills=get_skills(),
-            load_skill_template=prompts.load_skill,
-        ),
-        instructions=prompts.skills,
-    )
 
 
 def build_agent(
@@ -124,7 +111,6 @@ def build_agent(
             capability_func=get_external_tool_capability_function(),
         ),
         UIContextsCapability(instructions=resolved_prompts.ui_contexts),
-        build_skills_capability(prompts=resolved_prompts),
     ]
     if schema is not None and build_graphql_context is not None:
         capabilities.append(
@@ -148,7 +134,8 @@ def build_agent(
         )
     if phoenix_mcp_server is not None:
         # Per agent: the toolset carries this request's principal and this run's
-        # tool-group reveals.
+        # tool-group reveals. Skills arrive here too: the server's tools load
+        # them and its handshake instructions advertise them.
         capabilities.append(
             PhoenixMCPCapability[AgentDependencies](
                 mcp_server=PhoenixMCPToolset[AgentDependencies](
@@ -157,6 +144,7 @@ def build_agent(
                     id="phoenix_rest_api",
                 ),
                 instructions=resolved_prompts.phoenix_mcp_tools,
+                server_instructions=phoenix_mcp_server.instructions,
             )
         )
     if enable_web_access:

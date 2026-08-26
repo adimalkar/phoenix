@@ -17,7 +17,6 @@ from anthropic.types.beta import (
     BetaUsage,
 )
 from anthropic.types.beta.message_create_params import MessageCreateParams
-from jinja2 import Template
 from opentelemetry.trace import NoOpTracerProvider
 from pydantic_ai import RunContext, UserError
 from pydantic_ai.models.anthropic import AnthropicModel
@@ -44,10 +43,10 @@ from phoenix.server.agents.capabilities import (
 from phoenix.server.agents.context import ResolvedContexts
 from phoenix.server.agents.prompts import AgentPrompts
 from phoenix.server.agents.pydantic_ai import OpenInferenceModelWrapper
-from phoenix.server.agents.skills import get_skills
 from phoenix.server.agents.types import (
     AgentDependencies,
 )
+from phoenix.server.mcp.skills import PXI_SKILLS_ROOTS, load_skills
 from phoenix.server.types import DbSessionFactory
 
 _DEFAULT_PROMPTS = AgentPrompts()
@@ -72,6 +71,32 @@ def build_agent(**kwargs: Any) -> Any:
     kwargs.setdefault("db", Mock(spec=DbSessionFactory))
     kwargs.setdefault("event_queue", Mock())
     return _build_agent(**kwargs)
+
+
+def _pxi_mcp_server() -> Any:
+    """The agent's own MCP server as production builds it: code mode over a
+    read-only surface, serving the general and PXI skill roots."""
+    from fastapi import FastAPI
+
+    from phoenix.server.mcp_server import build_phoenix_mcp_server
+    from phoenix.server.monty_runtime import MontyRuntime
+
+    app = FastAPI()
+
+    @app.get("/v1/projects", tags=["projects"], summary="List projects.")
+    async def projects() -> list[str]:
+        return []
+
+    server, _ = build_phoenix_mcp_server(
+        app,
+        monty_runtime=MontyRuntime(),
+        code_mode=True,
+        monty_consumer="agent",
+        read_only=True,
+        db=Mock(spec=DbSessionFactory),
+        skills_roots=PXI_SKILLS_ROOTS,
+    )
+    return server
 
 
 @dataclass
@@ -277,10 +302,10 @@ def _get_concatenated_text(blocks: list[BetaTextBlockParam]) -> str:
 
 
 def _get_skills_catalog(body: MessageCreateParams) -> str:
-    """Return the ``<available_skills>`` block from the request's system blocks."""
+    """Return the ``Available skills:`` listing from the request's system blocks."""
     text = "\n".join(_get_system_texts(body))
-    start = text.index("<available_skills>")
-    end = text.index("</available_skills>", start) + len("</available_skills>")
+    start = text.index("Available skills:")
+    end = text.index("\n\n", start)
     return text[start:end]
 
 
@@ -339,14 +364,14 @@ class TestSystemBlockCacheBoundary:
         anthropic_model: AnthropicModel,
         captured_request: CapturedRequest,
     ) -> None:
-        agent = build_agent(model=anthropic_model)
+        agent = build_agent(model=anthropic_model, phoenix_mcp_server=_pxi_mcp_server())
         deps = AgentDependencies(contexts=ResolvedContexts())
 
         await agent.run("hello", deps=deps)
 
         cached_blocks, _ = _partition_system_blocks_by_cache_breakpoint(captured_request.body)
         cached_text = _get_concatenated_text(cached_blocks)
-        assert "<available_skills>" in cached_text
+        assert "Available skills:" in cached_text
         assert "<phoenix_project_context>" in cached_text
 
     async def test_nothing_sits_after_the_cache_breakpoint(
@@ -357,7 +382,7 @@ class TestSystemBlockCacheBoundary:
         """The system prompt is entirely static, so the breakpoint sits at its
         end and there is nothing behind it to reprocess. Per-run state rides on
         the user's turn as a `<phoenix_ui_state>` block instead."""
-        agent = build_agent(model=anthropic_model)
+        agent = build_agent(model=anthropic_model, phoenix_mcp_server=_pxi_mcp_server())
         deps = AgentDependencies(
             contexts=ResolvedContexts(
                 playground=PlaygroundUIContext(type="playground"),
@@ -379,7 +404,7 @@ class TestSystemBlockCacheBoundary:
         cached_text = _get_concatenated_text(cached_blocks)
         for documented in (
             _DEFAULT_PROMPTS.base,
-            "<available_skills>",
+            "Available skills:",
             "<phoenix_project_context>",
             "<phoenix_playground_context>",
             "<phoenix_gql_mutations_policy>",
@@ -511,7 +536,7 @@ class TestPrefixStabilityAcrossNavigation:
     ) -> None:
         """Tool definitions sit even further forward than the system prompt, so
         a reordering is as expensive as a rewrite."""
-        agent = build_agent(model=anthropic_model)
+        agent = build_agent(model=anthropic_model, phoenix_mcp_server=_pxi_mcp_server())
 
         await agent.run("hello", deps=AgentDependencies(contexts=ResolvedContexts()))
         await agent.run("hello", deps=AgentDependencies(contexts=_FULLY_MOUNTED_CONTEXTS))
@@ -735,22 +760,25 @@ class TestDocsMCPToolset:
         assert _DEFAULT_PROMPTS.docs_tool not in "\n".join(_get_system_texts(captured_request.body))
 
 
-class TestSkillsCapability:
+class TestSkills:
+    """Skills reach the agent through its MCP server: the handshake
+    instructions carry the catalog and the server's tools load them."""
+
     async def test_every_skill_advertised_inside_cache_boundary(
         self,
         anthropic_model: AnthropicModel,
         captured_request: CapturedRequest,
     ) -> None:
-        agent = build_agent(model=anthropic_model)
+        agent = build_agent(model=anthropic_model, phoenix_mcp_server=_pxi_mcp_server())
         deps = AgentDependencies(contexts=ResolvedContexts())
 
         await agent.run("hello", deps=deps)
 
         cached_blocks, _ = _partition_system_blocks_by_cache_breakpoint(captured_request.body)
         cached_text = _get_concatenated_text(cached_blocks)
-        assert "<available_skills>" in cached_text
-        for skill in get_skills():
-            assert f"<name>{skill.name}</name>" in cached_text
+        assert "Available skills:" in cached_text
+        for skill in load_skills(PXI_SKILLS_ROOTS):
+            assert f"- {skill.name}: {skill.description}" in cached_text
 
     async def test_catalog_is_identical_on_an_empty_and_a_fully_mounted_surface(
         self,
@@ -758,7 +786,7 @@ class TestSkillsCapability:
         captured_request: CapturedRequest,
     ) -> None:
         """The catalog is prefix content, so navigating must not rewrite it."""
-        agent = build_agent(model=anthropic_model)
+        agent = build_agent(model=anthropic_model, phoenix_mcp_server=_pxi_mcp_server())
 
         await agent.run("hello", deps=AgentDependencies(contexts=ResolvedContexts()))
         await agent.run("hello", deps=AgentDependencies(contexts=_FULLY_MOUNTED_CONTEXTS))
@@ -766,20 +794,35 @@ class TestSkillsCapability:
         bare, mounted = (_get_skills_catalog(body) for body in captured_request.bodies)
         assert bare == mounted
 
-    async def test_skill_tools_are_advertised(
+    async def test_skill_tools_are_advertised_beside_execute(
         self,
         anthropic_model: AnthropicModel,
         captured_request: CapturedRequest,
     ) -> None:
-        agent = build_agent(model=anthropic_model)
+        """Code mode folds the REST surface behind ``execute`` but leaves the
+        skill tools direct, so the transcript renders each load."""
+        agent = build_agent(model=anthropic_model, phoenix_mcp_server=_pxi_mcp_server())
         deps = AgentDependencies(contexts=ResolvedContexts())
 
         await agent.run("hello", deps=deps)
 
         tool_names = _get_tool_names(captured_request.body)
+        assert "execute" in tool_names
         assert "load_skill" in tool_names
         assert "read_skill_resource" in tool_names
         assert "write_span_note" in tool_names
+
+    async def test_absent_without_a_server(
+        self,
+        anthropic_model: AnthropicModel,
+        captured_request: CapturedRequest,
+    ) -> None:
+        agent = build_agent(model=anthropic_model)
+
+        await agent.run("hello", deps=AgentDependencies(contexts=ResolvedContexts()))
+
+        assert "load_skill" not in _get_tool_names(captured_request.body)
+        assert "Available skills:" not in "\n".join(_get_system_texts(captured_request.body))
 
 
 class TestEvaluatorsSkillLoadContract:
@@ -825,21 +868,6 @@ class TestCapabilityInstructionsOverride:
         cached_text = _get_concatenated_text(cached_blocks)
         assert "CUSTOM_STATIC_SENTINEL" in cached_text
         assert _DEFAULT_PROMPTS.base not in cached_text
-
-    async def test_overridden_skills_instruction_replaces_default_in_system_blocks(
-        self,
-        anthropic_model: AnthropicModel,
-        captured_request: CapturedRequest,
-    ) -> None:
-        custom = AgentPrompts(skills=Template("CUSTOM_SKILLS_SENTINEL"))
-        agent = build_agent(model=anthropic_model, prompts=custom)
-        deps = AgentDependencies(contexts=ResolvedContexts())
-
-        await agent.run("hello", deps=deps)
-
-        joined_system = "\n".join(_get_system_texts(captured_request.body))
-        assert "CUSTOM_SKILLS_SENTINEL" in joined_system
-        assert "<available_skills>" not in joined_system
 
 
 class TestWebAccessCapabilities:

@@ -31,7 +31,7 @@ def model() -> TestModel:
     return TestModel(call_tools=[])
 
 
-async def test_skills_toolset_advertised(
+async def test_workspace_toolset_advertised(
     model: TestModel,
     schema: strawberry.Schema,
     db: DbSessionFactory,
@@ -49,8 +49,6 @@ async def test_skills_toolset_advertised(
     tool_names = {tool.name for tool in model.last_model_request_parameters.function_tools}
     assert "bash" in tool_names
     assert "write_span_note" in tool_names
-    assert "load_skill" in tool_names
-    assert "read_skill_resource" in tool_names
     assert "call_subagent" not in tool_names
 
 
@@ -74,28 +72,6 @@ async def test_call_subagent_toolset_advertised_when_enabled(
     assert "call_subagent" in tool_names
 
 
-async def test_skill_catalog_rendered_into_instructions(
-    model: TestModel,
-    schema: strawberry.Schema,
-    db: DbSessionFactory,
-) -> None:
-    agent = build_server_agent(
-        model=model,
-        schema=schema,
-        build_graphql_context=lambda: Mock(spec=Context),
-        db=db,
-        event_queue=Mock(),
-    )
-    result = await agent.run("hi")
-
-    instructions = result.all_messages()[0].instructions  # type: ignore[union-attr]
-    assert instructions is not None
-    assert "<available_skills>" in instructions
-    assert "phoenix-graphql" in instructions
-    assert "span-coding" in instructions
-    assert '<tool_group name="phoenix_rest_api">' not in instructions
-
-
 class TestPhoenixMCPTools:
     """The REST API reaches the server agent as tools only when a server is supplied."""
 
@@ -103,6 +79,7 @@ class TestPhoenixMCPTools:
     async def phoenix_mcp_server(self) -> Any:
         from fastapi import FastAPI
 
+        from phoenix.server.mcp.skills import PXI_SKILLS_ROOTS
         from phoenix.server.mcp_server import build_phoenix_mcp_server
         from phoenix.server.monty_runtime import MontyRuntime
 
@@ -120,6 +97,7 @@ class TestPhoenixMCPTools:
             monty_consumer="agent",
             read_only=True,
             db=Mock(spec=DbSessionFactory),
+            skills_roots=PXI_SKILLS_ROOTS,
         )
         try:
             yield server
@@ -173,3 +151,31 @@ class TestPhoenixMCPTools:
         assert instructions is not None
         assert '<tool_group name="phoenix_rest_api">' in instructions
         assert ServerAgentPrompts().phoenix_mcp_tools in instructions
+
+    async def test_skills_arrive_with_the_server(
+        self,
+        model: TestModel,
+        schema: strawberry.Schema,
+        db: DbSessionFactory,
+        phoenix_mcp_server: Any,
+    ) -> None:
+        """The skill tools stay direct under code mode, and the catalog rides
+        the server's handshake instructions into the system prompt."""
+        agent = build_server_agent(
+            model=model,
+            schema=schema,
+            build_graphql_context=lambda: Mock(spec=Context),
+            db=db,
+            event_queue=Mock(),
+            phoenix_mcp_server=phoenix_mcp_server,
+        )
+        result = await agent.run("hi")
+
+        assert model.last_model_request_parameters is not None
+        tool_names = {tool.name for tool in model.last_model_request_parameters.function_tools}
+        assert {"load_skill", "read_skill_resource"} <= tool_names
+        instructions = result.all_messages()[0].instructions  # type: ignore[union-attr]
+        assert instructions is not None
+        assert "Available skills:" in instructions
+        assert "- phoenix-graphql: " in instructions
+        assert "- span-coding: " in instructions

@@ -19,7 +19,6 @@ from phoenix.server.agents.capabilities import (
     PhoenixMCPToolset,
     build_anthropic_prompt_cache_capability,
 )
-from phoenix.server.agents.capabilities.skills import SkillsCapability, SkillsToolset
 from phoenix.server.agents.capabilities.tools.internal import CallSubAgentCapability
 from phoenix.server.agents.capabilities.tools.internal.bash import (
     BashCapability,
@@ -33,8 +32,6 @@ from phoenix.server.agents.pydantic_ai import (
     OpenInferenceAgentWrapper,
     OpenInferenceCapabilityWrapper,
 )
-from phoenix.server.agents.skills.phoenix_graphql import PHOENIX_GRAPHQL_SKILL
-from phoenix.server.agents.skills.span_coding import SPAN_CODING_SKILL
 from phoenix.server.agents.web_access import (
     build_web_fetch_capability,
     build_web_search_capability,
@@ -109,15 +106,6 @@ def build_server_agent(
             is_viewer=is_viewer,
         ),
     ]
-    capabilities.append(
-        SkillsCapability(
-            toolset=SkillsToolset[None](
-                skills=[PHOENIX_GRAPHQL_SKILL, SPAN_CODING_SKILL],
-                load_skill_template=resolved_prompts.load_skill,
-            ),
-            instructions=resolved_prompts.skills,
-        )
-    )
     if docs_mcp_server is not None:
         capabilities.append(
             MintlifyDocsMCPCapability[None](
@@ -127,7 +115,8 @@ def build_server_agent(
         )
     if phoenix_mcp_server is not None:
         # Per agent: the toolset carries this request's principal and this run's
-        # tool-group reveals.
+        # tool-group reveals. Skills arrive here too: the server's tools load
+        # them and its handshake instructions advertise them.
         capabilities.append(
             PhoenixMCPCapability[None](
                 mcp_server=PhoenixMCPToolset[None](
@@ -136,6 +125,7 @@ def build_server_agent(
                     id="phoenix_rest_api",
                 ),
                 instructions=resolved_prompts.phoenix_mcp_tools,
+                server_instructions=phoenix_mcp_server.instructions,
             )
         )
     if enable_web_access:
