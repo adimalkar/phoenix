@@ -1,5 +1,17 @@
 # Changelog
 
+## [20.5.0](https://github.com/Arize-ai/phoenix/compare/arize-phoenix-v20.4.0...arize-phoenix-v20.5.0) (2026-08-27)
+
+
+### Features
+
+* **prompts:** add REST prompt version creation ([#13846](https://github.com/Arize-ai/phoenix/issues/13846)) ([dbf15e9](https://github.com/Arize-ai/phoenix/commit/dbf15e93922bb62c99cce56e6bfe94e8e5590701))
+
+
+### Bug Fixes
+
+* **cost-tracking:** sync LiteLLM reasoning token rates into the cost manifest ([#15164](https://github.com/Arize-ai/phoenix/issues/15164)) ([b0c1e60](https://github.com/Arize-ai/phoenix/commit/b0c1e60c5f4551279ecff9ac84ab780a5981ccab))
+
 ## [20.4.0](https://github.com/Arize-ai/phoenix/compare/arize-phoenix-v20.3.0...arize-phoenix-v20.4.0) (2026-08-26)
 
 
