@@ -26,18 +26,18 @@ OPERATIONS
   - {"type":"set_description","description":"Scores answer correctness"}
   - {"type":"set_name","name":"correctness-v2"}
   - {"type":"set_output_configs","outputConfigs":[{"kind":"classification","name":"correctness-v2","optimizationDirection":"MAXIMIZE","values":[{"label":"correct","score":1},{"label":"incorrect","score":0}]}]} — whole-list replace. LLM evaluators use the `classification` kind: each config lists the labels the judge can return. Use the draft evaluator name on each entry unless the judge clearly returns multiple independent outputs.
-  - {"type":"set_test_payload","testPayload":{"input":{},"output":{"messages":[{"role":"assistant","content":"Final answer"}]},"reference":{},"metadata":{}}} — whole-value replacement for the JSON mapping source used by the preview/test section.
+  - {"type":"set_test_payload","testPayload":{"input":{},"output":{"messages":[{"role":"assistant","content":"Final answer"}]},"reference":{},"metadata":{}}} — whole-value replacement for the JSON mapping source used by the preview/test section; `reference` is dataset-only.
 
 INVARIANTS
 - Do NOT set the judge prompt `tools` or `toolChoice` — they are derived from `outputConfigs` and `includeExplanation` and regenerated when the edit is applied, so changing `set_output_configs` or `set_include_explanation` keeps the judge tool consistent automatically.
-- The judge prompt `messages` reference run fields via template variables ({{input}}, {{output}}, {{reference}}, {{metadata}}); for dataset-backed evaluators `output` is the new experiment run output at runtime and Phoenix passes the dataset example `output` as `reference`.
+- The judge prompt `messages` reference run fields via template variables the draft's grain supplies: {{input}}, {{output}}, {{reference}} and {{metadata}} on a dataset-backed draft, where `output` is the new experiment run output at runtime and Phoenix passes the dataset example `output` as `reference`; {{input}}, {{output}} and {{metadata}} on a span or session draft, where everything else sits under `metadata` and is reached with a `metadata.…` path mapping.
 - Treat the dataset example shape as evidence for which fields carry the signal, especially chat-style `messages` arrays, assistant content parts, `tool_calls`/`toolCalls`, or `function_call`; do not assume the signal is at a top-level key.
 
 INPUT MAPPING
 - Keep `inputMapping` at the safe default ({"literalMapping": {}, "pathMapping": {}}) unless the user explicitly asks for custom mapping or the current draft already uses mapping intentionally.
 
 TEST PAYLOAD
-- `testPayload` is the JSON mapping source the form preview uses while the user is authoring the evaluator, with `input`, `output`, `reference`, and `metadata` object fields.
+- `testPayload` is the JSON mapping source the form preview uses while the user is authoring the evaluator, with `input`, `output`, and `metadata` object fields, plus `reference` on dataset-backed drafts.
 - Shape `testPayload.output` from the dataset `output` shape or the user's concrete target case; treat it as representative evidence, not a fixed schema guarantee.
 - Use `set_test_payload` when preview failures show the test case is missing the signal the judge should score, or when the user asks to try a different representative output.
 
@@ -56,15 +56,22 @@ TEST_PAYLOAD_SCHEMA: dict[str, Any] = {
     "type": "object",
     "description": (
         "Replacement evaluator preview payload. The shape matches the form "
-        "mapping source: input, output, reference, and metadata JSON objects."
+        "mapping source: input, output, and metadata JSON objects, plus "
+        "reference on dataset-backed drafts."
     ),
     "properties": {
         "input": JSON_RECORD_SCHEMA,
         "output": JSON_RECORD_SCHEMA,
-        "reference": JSON_RECORD_SCHEMA,
+        "reference": {
+            **JSON_RECORD_SCHEMA,
+            "description": (
+                "Dataset-backed drafts only: the dataset example output the run "
+                "output is compared against. Spans and sessions have no reference."
+            ),
+        },
         "metadata": JSON_RECORD_SCHEMA,
     },
-    "required": ["input", "output", "reference", "metadata"],
+    "required": ["input", "output", "metadata"],
     "additionalProperties": False,
 }
 

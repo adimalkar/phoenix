@@ -28,13 +28,13 @@ OPERATIONS
   - {"type":"set_description","description":"Scores hallucination risk"}
   - {"type":"set_name","name":"hallucination-v2"}
   - {"type":"set_output_configs","outputConfigs":[{"kind":"freeform","name":"hallucination-v2","optimizationDirection":"MAXIMIZE","threshold":0.5,"lowerBound":0,"upperBound":1}]} — whole-list replace. Other valid `kind`s: `classification` (with a `values` list of {label, score?}) and `continuous` (with `lowerBound`/`upperBound`). Use the draft evaluator name on each entry unless the evaluator clearly returns multiple independent outputs. Propose output configs whenever you can infer them from the source rather than leaving the draft's defaults in place.
-  - {"type":"set_test_payload","testPayload":{"input":{},"output":{"messages":[{"role":"assistant","content":"Final answer"}]},"reference":{},"metadata":{}}} — whole-value replacement for the JSON mapping source used by the preview/test section.
+  - {"type":"set_test_payload","testPayload":{"input":{},"output":{"messages":[{"role":"assistant","content":"Final answer"}]},"reference":{},"metadata":{}}} — whole-value replacement for the JSON mapping source used by the preview/test section; `reference` is dataset-only.
 
 INVARIANTS
 - Never rename or remove the `evaluate` function — the runtime calls it by name.
-- Only declare parameters from {input, output, reference, metadata} on `evaluate`; additional parameters fail at execution.
+- `evaluate` may only declare parameters the draft's grain supplies: `{input, output, reference, metadata}` on a dataset-backed draft, `{input, output, metadata}` on a span or session draft, where everything but `input` and `output` sits under `metadata` and is reached with a `metadata.…` path mapping. Any other name fails at execution.
 - For dataset-backed evaluators, `output` is the new experiment run output at runtime, and Phoenix passes the dataset example `output` as `reference`; the dataset `output` shape is evidence for what future run outputs may look like.
-- Prefer direct `evaluate` arguments and parse nested dicts, lists, or stringified JSON inside the function rather than relying on custom input mapping — the simplest evaluator usually declares only `output`, adding `reference` for relational checks against expected/golden/subset data.
+- Prefer direct `evaluate` arguments and parse nested dicts, lists, or stringified JSON inside the function rather than relying on custom input mapping — the simplest evaluator usually declares only `output`, adding `reference` on a dataset-backed draft for relational checks against expected/golden/subset data.
 - Treat the dataset example shape as evidence: write helpers that normalize JSON strings and traverse the actual structure, especially chat-style `messages` arrays, assistant content parts, `tool_calls`/`toolCalls`, or `function_call`; do not assume the signal is at a top-level key.
 - In `edit` mode `set_language` is rejected (language is immutable post-create).
 - In `create` mode, switching `set_language` may clear an incompatible `sandboxConfigId`, so include a compatible `set_sandbox_config` in the same proposal; create-mode proposals that leave `sandboxConfigId` null are rejected.
@@ -48,7 +48,7 @@ INPUT MAPPING
 - If you need a nested value from the dataset example, read it from the direct argument in `sourceCode` instead of proposing a path-mapping edit.
 
 TEST PAYLOAD
-- `testPayload` is the JSON mapping source the form preview uses while the user is authoring the evaluator, with `input`, `output`, `reference`, and `metadata` object fields.
+- `testPayload` is the JSON mapping source the form preview uses while the user is authoring the evaluator, with `input`, `output`, and `metadata` object fields, plus `reference` on dataset-backed drafts.
 - Shape `testPayload.output` from the dataset `output` shape or the user's concrete target case; treat it as representative evidence, not a fixed schema guarantee.
 - For relational evaluators, keep `testPayload.output` as the candidate new run output and put expected/golden/subset data in `testPayload.reference`, not in input mapping.
 - Use `set_test_payload` when preview failures show the test case is missing the signal the evaluator should score, or when the user asks to try a different representative output.
@@ -75,15 +75,22 @@ TEST_PAYLOAD_SCHEMA: dict[str, Any] = {
     "type": "object",
     "description": (
         "Replacement evaluator preview payload. The shape matches the form "
-        "mapping source: input, output, reference, and metadata JSON objects."
+        "mapping source: input, output, and metadata JSON objects, plus "
+        "reference on dataset-backed drafts."
     ),
     "properties": {
         "input": JSON_RECORD_SCHEMA,
         "output": JSON_RECORD_SCHEMA,
-        "reference": JSON_RECORD_SCHEMA,
+        "reference": {
+            **JSON_RECORD_SCHEMA,
+            "description": (
+                "Dataset-backed drafts only: the dataset example output the run "
+                "output is compared against. Spans and sessions have no reference."
+            ),
+        },
         "metadata": JSON_RECORD_SCHEMA,
     },
-    "required": ["input", "output", "reference", "metadata"],
+    "required": ["input", "output", "metadata"],
     "additionalProperties": False,
 }
 
@@ -155,8 +162,10 @@ OPERATION_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": (
                 "Full replacement source for the evaluator. Must still define a "
-                "function named `evaluate` whose parameters are a subset of "
-                "{input, output, reference, metadata}."
+                "function named `evaluate` whose parameters are a subset of the "
+                "draft's mapping source: {input, output, reference, metadata} for "
+                "dataset-backed drafts, {input, output, metadata} for span and "
+                "session drafts."
             ),
         },
         "language": {
